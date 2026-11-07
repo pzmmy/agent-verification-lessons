@@ -2,9 +2,11 @@
 
 ### Acceptance lessons from a 4-machine, 3-runtime coding pipeline (one node since retired)
 
-*Draft v2 — 2026-09-24. This is a field write-up, not a framework announcement.*
-*v2 applies the changes required by the pre-publication review (4 × P1, 8 × P2): honest implementation
-status for the read-only gate, the fixture-scale lesson, terminology and structure fixes.*
+*Draft v3 — 2026-11-07. This is a field write-up, not a framework announcement.*
+*v2 (2026-09-24) applied the pre-publication review (4 × P1, 8 × P2): honest implementation status for
+the read-only gate, the fixture-scale lesson, terminology and structure fixes.*
+*v3 adds group F — four rules the team already knew and never enforced — plus §4.5 on moving a rule from
+prose into the execution path, and the spec-driven tooling comparison in §7. Items A1–E3 are unchanged.*
 
 ---
 
@@ -14,6 +16,7 @@ status for the read-only gate, the fixture-scale lesson, terminology and structu
 - An exit code tells you whether the process finished, not whether the work landed.
 - This is a list of failure modes, not a product pitch.
 - If your setup is *one machine, one coding CLI, a PR flow* — use [4x](https://github.com/ggwhite/4x) or [Liza](https://github.com/liza-mas/liza). You do not need this.
+- **Every item below was a rule we already knew.** The failure was never ignorance; it was the absence of a surface that enforces the rule (§4.5).
 
 ---
 
@@ -68,9 +71,9 @@ Everything below is a way that rule gets violated — including, repeatedly, by 
 
 ---
 
-## 3. Nineteen ways the verification itself lies
+## 3. Twenty-three ways the verification itself lies
 
-**A word on the title.** The nineteen items below are your *verification* lying to you, which is the more dangerous half: a lie from an agent still leaves a disk you can inspect, whereas a lie from your own gate tells you the disk is fine. The title stays because it is what people search for; the content is about the second half.
+**A word on the title.** The twenty-three items below are your *verification* lying to you, which is the more dangerous half: a lie from an agent still leaves a disk you can inspect, whereas a lie from your own gate tells you the disk is fine. The title stays because it is what people search for; the content is about the second half.
 
 The agent's own lie sits upstream of all of them, in §2 — Case B, where the process succeeds and nothing is executed — and D1 below is the detector we built to catch it, which then produced a false failure of its own.
 
@@ -216,6 +219,82 @@ Items marked *(our choice)* are decisions we made rather than bugs we hit; items
 
 > **Self-check for group E:** after redirecting your output root, does anything still write to the real store?
 
+### Group F — Rules that were never enforced
+
+Every item below was a rule someone on the team already knew. The failure was not ignorance; it was the
+absence of a surface that enforces the rule. That distinction is the whole group.
+
+**F1 · A rule the agent knows is not a rule the agent follows.**
+*Symptom:* "never print a secret" existed in prose, in the system prompt and in the task template. It
+still failed **seven times in one engagement** — each time through a *different* command nobody had
+enumerated: `diff` on a config file, `cat -n`, `od`, `head` of an `.env`, `git show` of a commit that
+contained a token, and an inline `mysql -p…` one-liner. None of these were leaks in transit. The secret
+was already on disk; the tool call copied it into the transcript.
+*Cost:* the transcript is the leak surface — logs, the model's context window, screenshots, and any
+downstream summariser that reads them. One `diff` of a config file can put six credentials somewhere you
+never audited.
+*Test:* take every command in your toolchain that can print a file and run it against a canary file
+containing a fake secret. If the secret appears in the tool result, that command is a hole — regardless
+of what the rule says.
+*Fix (two mechanisms, neither of which is a prompt):* (a) **pre-execution interception** — refuse the
+command *shape* before it runs, so an enumeration of dangerous commands is enforced rather than
+remembered; (b) **post-execution transformation** — rewrite every tool result so a secret becomes
+`key=<name> len=<n> shape=<class>`, keeping no first or last characters and no hash (a hash is still an
+oracle). We shipped (b) on the tool boundary, not as advice, and the rule now holds for an agent that
+has never heard of it (it is a small MIT plugin, [credential-guard](https://github.com/pzmmy/credential-guard)). The honest gap: an allowlist plus a filesystem sandbox is the stronger design; we
+have the two mechanisms above, not the sandbox.
+*Why it belongs here:* it is A4 in a different costume — "read-only" and "never print secrets" are both
+*intentions* until something on the execution path makes them properties.
+
+**F2 · Spec, plan and tasks drift apart while each one stays internally consistent.**
+*Symptom:* after a few rounds, `spec.md` described a behaviour the `plan.md` no longer implemented, and
+`tasks.md` still scheduled work for the behaviour that had been removed. Every document was readable, and
+every document was self-consistent. The *set* was not. Nothing in the gate looked at the set.
+*Cost:* you implement the plan, verify against the tasks, and ship something the specification does not
+describe — with every step green, because no check compares documents to each other.
+*Test:* pick one requirement and trace it forward (spec → plan → task → test), then pick one task and
+trace it backward. Every dangling edge is a finding, and the **count of dangling edges** is the
+measurement.
+*Fix:* a mechanical cross-artifact pass — build a semantic model of each document, run four detection
+channels (duplication, contradiction, coverage gap, terminology drift), and grade each finding
+CRITICAL / HIGH / MEDIUM / LOW. Report the edges, not a summary sentence. A consistency check that only
+prints "looks fine" is the same false green as B2.
+
+**F3 · "Done" is an opinion until it is computed.**
+*Symptom:* after implementation, "are we done?" was answered by reading the diff and feeling satisfied.
+Two of three rounds called finished still had declared intent with no code behind it. The missing part
+was never the hard part; it was the part nobody had written down as an item.
+*Cost:* the last ten percent lives in the gap between *what the artefacts asked for* and *what the code
+does*. A human reading a diff cannot enumerate that gap, and neither can an agent asked to "check your
+work" — the same actor that skipped the item is the one auditing for it.
+*Test:* write the **intent inventory before looking at the code** — every declared behaviour, constraint
+and acceptance criterion, one line each — then mark each item `present / partial / absent` by pointing
+at the code that satisfies it. If you cannot point, it is not present.
+*Fix:* compute the verdict. Build the inventory from the artefacts, assess the codebase against it,
+classify the findings, then either report `Converged` with an empty remainder, or append the remainder as
+tasks. **A round may not be called complete while the remainder is non-empty.** This is A1's rule —
+three states, not two — applied to the project instead of to a step.
+
+**F4 · Three different things called "memory".**
+*Symptom:* "you told me X last month" was sometimes a full-text hit in the session archive, sometimes a
+derived conclusion from a memory service, and sometimes a line injected into every prompt. All three were
+called *memory*, and all three could be wrong in different ways: the archive hit can be a different
+project that used the same word; the derived conclusion can be a stale inference that was never revised;
+the injected profile can be a fact that stopped being true. In one review all three were cited in the
+same paragraph as if they were one source.
+*Cost:* you cannot audit a claim you cannot attribute. A wrong memory is worse than no memory, because it
+arrives with the confidence of a fact.
+*Test:* take one recalled fact and answer three questions — which store produced it, when was it written,
+and what would have to change on disk for it to become false?
+*Fix:* name the layers and give them an authority order — injected profile (highest authority, smallest
+scope), derived memory (medium; must carry provenance and a timestamp), history search (lowest: it is a
+*quote*, not a conclusion). Never let a quote be presented as a conclusion, and never let a derived
+inference be presented as something the user said.
+
+> **Self-check for group F:** for each rule you believe your pipeline enforces, name the surface that
+> enforces it — then try to break the rule without touching that surface.
+
+
 ---
 
 ## 4. The architecture we ended up with
@@ -229,6 +308,41 @@ Five layers, each one a direct answer to the failure modes above. Nothing here i
 5. **Explicit cost ceiling** — the worst-case number of model attempts per step is *written down in one sentence*, and the code comment matches the code. *Catches: D2.*
 
 The one-line version: **every layer converts a claim into an observation.**
+
+## 4.5 From lessons to mechanisms: three executable gates
+
+The five layers above **accept** work. They do not **prevent** it; they judge it after the fact. The four
+failures in group F sit earlier in the path, and the fix for all of them is one move: take the rule out of
+prose and put it on the execution path.
+
+A rule can live at three levels, and only one of them survives an agent that is tired, rushed, or working
+from a stale instruction:
+
+| Level | Where the rule lives | What enforces it | Failure mode |
+|---|---|---|---|
+| Prose | a document, a README, a checklist | human memory and attention | forgotten under load |
+| Prompt | the system prompt, a task template | the model's attention | diluted by context, overridden by a stronger instruction |
+| **Mechanism** | the execution path itself | the runtime | costs engineering — and cannot be talked out of |
+
+Three gates, one per enforcement failure:
+
+1. **Credential gate — before and after every tool call.** Before: refuse the command shape (F1a). After:
+   transform the result (F1b). Neither asks the agent for cooperation. The check to keep: a canary secret
+   that must never appear in any tool result.
+2. **Consistency gate — between artefacts, before implementation.** Model each document, run the four
+   detection channels, grade the findings (F2). The check to keep: every requirement traces forward and
+   every task traces back.
+3. **Convergence gate — against the artefacts, after implementation.** Build the intent inventory,
+   assess, and produce either `Converged` or a remainder that becomes tasks (F3). The check to keep: a
+   round cannot be marked complete with a non-empty remainder.
+
+The pattern is identical in all three: **the rule stops being something the agent must remember and
+becomes something the system does.** That is also why they are cheap — each is a few hundred lines. The
+expensive part was noticing that the rule had been "known" for months while the failures kept happening.
+
+> **The generalisation:** if a rule has failed more than twice, stop rewriting the rule and start building
+> the surface that enforces it.
+
 
 ---
 
@@ -278,6 +392,8 @@ To run ours: the orchestrator takes a task file (`orchestrator.sh tasks/<name>.y
 - **Unbounded retries.** Retries multiply across levels (D2) and hide the fact that a step is structurally unable to pass (B3).
 - **Letting the producer judge its own output.** The same actor that wrote the change is the worst-placed actor to certify it.
 - **Gates written as prompts.** A gate that lives in a prompt is a suggestion. A gate that runs a command and reads the exit code and output is a gate.
+- **Writing the rule again, louder.** If a rule has failed twice, the problem is the enforcement surface, not the wording. Repeating it in the prompt is how you get the seventh credential leak.
+- **Declaring done from the diff.** The diff shows what changed, not what the specification asked for. Only an inventory can answer "is it all there".
 
 ---
 
@@ -290,17 +406,18 @@ We surveyed the field before building. Each of these does something better than 
 - **[Metaswarm](https://github.com/dsifry/metaswarm)** — the orchestrator verifies independently and never trusts a subagent's self-report; retries get a *fresh* reviewer.
 - **[Multi-Agent Evolution Framework](https://github.com/CJ-coding-apps/Multi-Agent-Evolution-Framework)** — signed in-toto attestations per role, plus per-role tool allowlists. Closest to our ③.
 - **[Emdash](https://github.com/generalaction/emdash)** — natively targets remote machines; the only one pointing the same direction as us on cross-machine work.
+- **[spec-kit](https://github.com/github/spec-kit)** — artefact templates plus clarify / checklist / analyze gates and a converge loop; the closest public work to our F2 and F3, and the first mainstream toolchain to make the artefacts first-class. Two limits matter for this write-up: it assumes a single repository where the agent implements, and it has no notion of acceptance on a different machine. Its gates are also **skills the agent runs**, so by §4.5's ladder they are still prompts — better prompts, but not yet a surface.
 - **[A2A](https://a2a-protocol.org/)** — the emerging standard for agent-to-agent interop across hosts (Linux Foundation; v1.0.1, current as of May 2026). **We read the spec rather than implementing it, and "an Agent Card plus JSON-RPC per node" understates it in the direction that matters**: a conformant node is an Agent Card's required field groups, a resident HTTPS JSON-RPC service serving eleven methods, a task store with cursor pagination, and per-request authorization scoping. What it does *not* give you is anything our pipeline is actually built around — assertion-level gates, three-state verdicts, content hashes, signed attestations: the A2A data model has no verdict object, and `Artifact` has no digest field. For four statically known nodes behind one orchestrator, A2A's discovery layer buys nothing (its own spec points you at direct configuration), and its SSRF guidance steers push notifications away from all four private ranges (`127.0.0.0/8`, `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`) — and ours is one of them. **Adopting it would be additive, not substitutive: every script in our acceptance layer would stay.**
 
 What we added is narrow and specific: **cross-machine, heterogeneous runtimes, no PR flow, acceptance on the machine that ran the change.**
 
-Three caveats on our own evidence, since this whole piece is about evidence. First, all of it comes from **one pipeline** over a few months — nineteen failure modes from one system is a sample, not a survey, and a different stack will meet a different nineteen. Second, the attestation layer detects **tampering and corruption, not a malicious operator**: the key lives on the orchestration host, so anyone who can read the key can forge a record. It is an integrity check for a cooperative team, not a defence against an adversary who already has your shell.
+Three caveats on our own evidence, since this whole piece is about evidence. First, all of it comes from **one pipeline** over a few months — twenty-three failure modes from one system is a sample, not a survey, and a different stack will meet a different twenty-three. Second, the attestation layer detects **tampering and corruption, not a malicious operator**: the key lives on the orchestration host, so anyone who can read the key can forge a record. It is an integrity check for a cooperative team, not a defence against an adversary who already has your shell.
 
 Third — and this is the one we had to learn by building it — **verification only means something if the verifier's own working set is out of the verified party's write scope.** We wrote a cross-machine evidence tool whose whole promise was "never a silent pass". A reviewer took it apart three times, and each time the false pass came from the same direction: not a broken comparison, but the *inputs* to that comparison being writable. The tool printed `missing: 2` and still concluded PASS, because the summary counters were recomputed from an on-disk file that another process had overwritten. Isolate the run directory, read the inputs once, and keep the verdict in memory — and then say out loud what you are *not* defending against. If the other side can rewrite your inputs, it can rewrite your gate script too, and no local file check survives that. State the boundary instead of pretending the tool covers it.
 
 ---
 
-## Appendix A — the nineteen, in one table
+## Appendix A — the twenty-three, in one table
 
 | # | Pitfall | One-line test | One-line fix |
 |---|---|---|---|
@@ -323,6 +440,10 @@ Third — and this is the one we had to learn by building it — **verification 
 | E1 | Attestation scope too wide / too narrow | Declare scope; assert both directions | Coverage gaps must fail |
 | E2 | Sandbox writes to the real store | Redirect output root, then re-check | Every path overridable; sandbox by default |
 | E3 | No incremental observation | Kill a run mid-flight | Append per judgement; summarise at the end |
+| F1 | A known rule, never enforced | Run every file-printing command against a canary secret | Intercept before; transform after — not a prompt |
+| F2 | Artefacts drift while each stays consistent | Trace one requirement forward and one task back | Cross-artefact pass with graded findings |
+| F3 | "Done" is an opinion | Write the intent inventory before reading the code | Compute `Converged`, or append the remainder |
+| F4 | Three things called "memory" | Attribute one recalled fact to a store and a date | Name the layers; give them an authority order |
 
 ## Appendix B — the three cross-machine constraints
 
@@ -338,4 +459,4 @@ Third — and this is the one we had to learn by building it — **verification 
 
 Text: CC BY 4.0. Any scripts extracted later: MIT.
 
-*Corrections welcome — every one of the nineteen above was found the expensive way, and we assume there are more.*
+*Corrections welcome — every one of the twenty-three above was found the expensive way, and we assume there are more.*
