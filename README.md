@@ -2,6 +2,8 @@
 
 **Acceptance lessons from a 4-machine, 3-runtime coding pipeline** (one node since retired).
 
+中文导读 → [README.zh-CN.md](README.zh-CN.md)
+
 A field write-up about a problem that shows up the moment you stop running an agent on your own
 machine: you can no longer see whether the work actually happened. The pipeline described here ran
 LLM coding steps across heterogeneous hosts — a WSL host, two Linux servers and a Windows box,
